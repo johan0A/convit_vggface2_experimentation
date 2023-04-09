@@ -19,6 +19,8 @@ If you use this code for a paper please cite:
 
 Install PyTorch 1.7.0+ and torchvision 0.8.1+ and [pytorch-image-models 0.3.2](https://github.com/rwightman/pytorch-image-models):
 
+##not valid for this fork /!\
+
 ```
 conda install -c pytorch pytorch torchvision
 pip install timm==0.3.2
