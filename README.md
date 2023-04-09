@@ -1,6 +1,6 @@
-# not valid for this fork /!\
 
-## ConViT : Vision Transformers with Convolutional Inductive Biases
+
+# ConViT : Vision Transformers with Convolutional Inductive Biases
 
 This repository contains PyTorch code for ConViT. It builds on code from the [Data-Efficient Vision Transformer](https://github.com/facebookresearch/deit) and from [timm](https://github.com/rwightman/pytorch-image-models).
 
@@ -17,6 +17,7 @@ If you use this code for a paper please cite:
 }
 ```
 
+# not valid for this fork /!\
 # Usage
 
 Install PyTorch 1.7.0+ and torchvision 0.8.1+ and [pytorch-image-models 0.3.2](https://github.com/rwightman/pytorch-image-models):
