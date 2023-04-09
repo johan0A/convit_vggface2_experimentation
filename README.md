@@ -1,4 +1,4 @@
-#not valid for this fork /!\
+# not valid for this fork /!\
 
 ## ConViT : Vision Transformers with Convolutional Inductive Biases
 
