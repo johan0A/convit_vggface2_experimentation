@@ -178,22 +178,33 @@ def get_args_parser():
     return parser
 
 def main(args):
+    # main(args): This is the main function of the program. It takes a bunch of settings called
+    # "args" as input and trains a model using those settings. It initializes distributed training,
+    # builds the training and validation datasets, creates the model, sets up the optimizer and
+    # loss function, and then trains the model for the specified number of epochs. After training,
+    # it evaluates the model on the validation dataset and prints out the performance metrics.
     utils.init_distributed_mode(args)
 
     print(args)
 
     device = torch.device(args.device)
-    
-    # fix the seed for reproducibility
+
+    # Fix the random seed for reproducibility. Add the rank of the process to the seed
+    # so that each process has a different seed, ensuring that each process receives
+    # different data samples during distributed training.
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     cudnn.benchmark = True
 
+    # Build the training and validation datasets, and get the number of classes in the dataset.
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
-                
+
+    # Set up the sampler for distributed training, which ensures that each process receives
+    # different data samples during training. Use the Random Augmented Sampler if the
+    # "repeated_aug" argument is set to True, otherwise use the Distributed Sampler.
     if True:  # args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
@@ -208,6 +219,7 @@ def main(args):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
+    # Create the data loaders for the training and validation datasets.
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
@@ -222,6 +234,7 @@ def main(args):
         pin_memory=args.pin_mem, drop_last=False
     )
 
+    # Initialize the Mixup function if mixup, cutmix, or cutmix_minmax is enabled.
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
     if mixup_active:
@@ -230,6 +243,7 @@ def main(args):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
+    # Create the model with the specified architecture and settings.
     print(f"Creating model: {args.model}")
     model = create_model(
         args.model,
@@ -246,6 +260,7 @@ def main(args):
     print(model)
     model.to(device)
 
+    # Set up the Exponential Moving Average (EMA) model if the "model_ema" argument is set to True.
     model_ema = None
     if args.model_ema:
         model_ema = ModelEma(
@@ -254,20 +269,31 @@ def main(args):
             device='cpu' if args.model_ema_force_cpu else '',
             resume='')
 
+    # Prepare the model for distributed training, if necessary.
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+
+    # Calculate the number of trainable parameters in the model and print it.
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
+    # Calculate the linearly scaled learning rate based on the batch size and world size.
     linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
     args.lr = linear_scaled_lr
+
+    # Create the optimizer with the updated learning rate and model parameters.
     optimizer = create_optimizer(args, model)
+
+    # Initialize the loss scaler for mixed precision training.
     loss_scaler = NativeScaler()
 
+    # Create the learning rate scheduler.
     lr_scheduler, _ = create_scheduler(args, optimizer)
 
+    # Set up the loss function (criterion) for training. Use SoftTargetCrossEntropy if mixup is enabled,
+    # LabelSmoothingCrossEntropy if label smoothing is enabled, or CrossEntropyLoss otherwise.
     criterion = LabelSmoothingCrossEntropy()
 
     if args.mixup > 0.:
@@ -278,16 +304,18 @@ def main(args):
     else:
         criterion = torch.nn.CrossEntropyLoss()
 
+    # Save the arguments to the output directory.
     output_dir = Path(args.output_dir)
     torch.save(args, output_dir / "args.pyT")
 
+    # Resume training from a checkpoint if the "resume" argument is specified.
     if args.resume:
         if str(args.resume).startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-            
+
         model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
@@ -296,6 +324,7 @@ def main(args):
             if args.model_ema:
                 utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
 
+    # If the "eval" argument is set to True, evaluate the model on the validation dataset and return.
     if args.eval:
         throughput = utils.compute_throughput(model, resolution=args.input_size)
         print(f"Throughput : {throughput:.2f}")
@@ -303,28 +332,38 @@ def main(args):
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
-
+    # Start the training process and record the start time.
     print("Start training")
     start_time = time.time()
     max_accuracy = 0.0
 
+    # Loop through each epoch (one complete run through the training dataset).
     for epoch in range(args.start_epoch, args.epochs):
+        # Clean up unused memory.
         gc.collect()
 
+        # If using distributed training, set the current epoch for the sampler.
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
-            
+
+        # Train the model for one epoch.
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn
         )
 
+        # Update the learning rate scheduler for the current epoch.
         lr_scheduler.step(epoch)
+
+        # Save the model's progress (checkpoints) to the output directory.
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
+            # Save additional checkpoints based on the 'save_every' setting.
             if args.save_every is not None:
-                if epoch % args.save_every == 0: checkpoint_paths.append(output_dir / 'checkpoint_{}.pth'.format(epoch))
+                if epoch % args.save_every == 0:
+                    checkpoint_paths.append(output_dir / 'checkpoint_{}.pth'.format(epoch))
+            # Save checkpoints to disk.
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({
                     'model': model_without_ddp.state_dict(),
@@ -335,11 +374,17 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
 
+        # Evaluate the model on the validation dataset.
         test_stats = evaluate(data_loader_val, model, device)
+
+        # Print the model's accuracy on the validation dataset.
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+
+        # Update the maximum accuracy achieved so far.
         max_accuracy = max(max_accuracy, test_stats["acc1"])
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
+        # Compute nonlocality, gating parameters, and distances for the model.
         nonlocality = {}
         gating_params = {}
         distances = {}
@@ -347,33 +392,51 @@ def main(args):
         batch = batch.to(device)
         batch = model_without_ddp.patch_embed(batch)
         for l in range(len(model_without_ddp.blocks)):
-            attn =  model_without_ddp.blocks[l].attn
+            attn = model_without_ddp.blocks[l].attn
             nonlocality[l] = attn.get_attention_map(batch).detach().cpu().numpy().tolist()
-            if 'convit' in args.model and l<args.local_up_to_layer:
+            if 'convit' in args.model and l < args.local_up_to_layer:
                 p = attn.pos_proj.weight
-                span = -1/p.data[:,-1]
-                dist_x =  p.data[:,0]*span/2
-                dist_y =  p.data[:,1]*span/2
-                dist = (dist_x**2+dist_y**2)**.5
+                span = -1 / p.data[:, -1]
+                dist_x = p.data[:, 0] * span / 2
+                dist_y = p.data[:, 1] * span / 2
+                dist = (dist_x ** 2 + dist_y ** 2) ** .5
                 distances[l] = dist.cpu().numpy().tolist()
                 gating_params[l] = attn.gating_param.data.cpu().numpy().tolist()
 
+        # Gather all the statistics into a single dictionary.
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
-                     **{f'nonlocality_{k}': v for k, v in nonlocality.items()},
-                     **{f'distances_{k}': v for k, v in distances.items()},
-                     **{f'gating_params_{k}': v for k, v in gating_params.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
+                    **{f'test_{k}': v for k, v in test_stats.items()},
+                    **{f'nonlocality_{k}': v for k, v in nonlocality.items()},
+                    **{f'distances_{k}': v for k, v in distances.items()},
+                    **{f'gating_params_{k}': v for k, v in gating_params.items()},
+                    'epoch': epoch,'n_parameters': n_parameters}
+
+        # Print the collected statistics.
         print(log_stats)
 
+        # Save the statistics to a log file if an output directory is specified.
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
+        # Calculate the total training time.
+        total_time = time.time() - start_time
+
+        # Convert the training time to a readable format.
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+
+        # Print the total training time.
+        print('Training time {}'.format(total_time_str))
+
+    # Calculate the total training time after the training loop.
     total_time = time.time() - start_time
+
+    # Convert the training time to a readable format.
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+
+    # Print the total training time.
     print('Training time {}'.format(total_time_str))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('ConViT training and evaluation script', parents=[get_args_parser()])
