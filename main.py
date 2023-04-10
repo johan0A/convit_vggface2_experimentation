@@ -419,15 +419,6 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-        # Calculate the total training time.
-        total_time = time.time() - start_time
-
-        # Convert the training time to a readable format.
-        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-
-        # Print the total training time.
-        print('Training time {}'.format(total_time_str))
-
     # Calculate the total training time after the training loop.
     total_time = time.time() - start_time
 
